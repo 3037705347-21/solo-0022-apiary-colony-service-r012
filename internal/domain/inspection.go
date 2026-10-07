@@ -39,47 +39,6 @@ const (
 	MaxNoteRunes      = 200
 )
 
-// InspectionMeasurements 是一次巡检请求里提交的原始量测。
-type InspectionMeasurements struct {
-	ColonyStrength int
-	BroodPattern   BroodPattern
-	Temper         Temper
-	MiteCount      int
-	Note           string
-}
-
-// NormalizeInspectionMeasurements 把量测整理成后续流程可以直接使用的取值。
-// 群势与螨数会落到系统认可的区间，文本字段去掉首尾空白。
-func NormalizeInspectionMeasurements(input InspectionMeasurements) InspectionMeasurements {
-	normalized := input
-	normalized.ColonyStrength = clampMeasure(input.ColonyStrength, MinColonyStrength, MaxColonyStrength)
-	normalized.MiteCount = clampMeasure(input.MiteCount, MinMiteCount, MaxMiteCount)
-	normalized.BroodPattern = CanonicalBroodPattern(input.BroodPattern)
-	normalized.Temper = CanonicalTemper(input.Temper)
-	normalized.Note = TrimText(input.Note)
-	return normalized
-}
-
-// CanonicalBroodPattern 去掉子脾形态文本的首尾空白。
-func CanonicalBroodPattern(value BroodPattern) BroodPattern {
-	return BroodPattern(TrimText(string(value)))
-}
-
-// CanonicalTemper 去掉性情文本的首尾空白。
-func CanonicalTemper(value Temper) Temper {
-	return Temper(TrimText(string(value)))
-}
-
-func clampMeasure(value, minimum, maximum int) int {
-	if value < minimum {
-		return minimum
-	}
-	if value > maximum {
-		return maximum
-	}
-	return value
-}
-
 func NewInspection(
 	hiveID string,
 	observedAt time.Time,

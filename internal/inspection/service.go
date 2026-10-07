@@ -29,55 +29,27 @@ type RecordInput struct {
 	Note           string
 }
 
+// Record 校验提交的量测，越界时整体退回；通过后从同一份记录派生关注项并保存，
+// 返回的回执就是写入仓储的那份记录，保证回执、列表与汇总读到一致的内容。
 func (s *Service) Record(hiveID string, input RecordInput) (domain.Inspection, error) {
 	observedAt := input.ObservedAt
 	if observedAt.IsZero() {
 		observedAt = s.clock()
 	}
-	submitted := domain.InspectionMeasurements{
-		ColonyStrength: input.ColonyStrength,
-		BroodPattern:   domain.BroodPattern(input.BroodPattern),
-		Temper:         domain.Temper(input.Temper),
-		MiteCount:      input.MiteCount,
-		Note:           input.Note,
-	}
-	normalized := domain.NormalizeInspectionMeasurements(submitted)
 	record, err := domain.NewInspection(
 		hiveID,
 		observedAt,
-		normalized.ColonyStrength,
-		normalized.BroodPattern,
-		normalized.Temper,
-		normalized.MiteCount,
-		normalized.Note,
+		input.ColonyStrength,
+		domain.BroodPattern(input.BroodPattern),
+		domain.Temper(input.Temper),
+		input.MiteCount,
+		input.Note,
 	)
 	if err != nil {
 		return domain.Inspection{}, err
 	}
-	record.Concerns = submittedConcerns(submitted)
-	saved, err := s.store.AddInspection(hiveID, record)
-	if err != nil {
-		return domain.Inspection{}, err
-	}
-	saved.ColonyStrength = submitted.ColonyStrength
-	saved.MiteCount = submitted.MiteCount
-	return saved, nil
-}
-
-// submittedConcerns 按提交时的量测派生关注项。
-func submittedConcerns(input domain.InspectionMeasurements) []string {
-	return DeriveConcerns(measurementSnapshot(input))
-}
-
-// measurementSnapshot 把提交时的量测还原成一份用于派生关注项的记录。
-func measurementSnapshot(input domain.InspectionMeasurements) domain.Inspection {
-	return domain.Inspection{
-		ColonyStrength: input.ColonyStrength,
-		BroodPattern:   input.BroodPattern,
-		Temper:         input.Temper,
-		MiteCount:      input.MiteCount,
-		Note:           input.Note,
-	}
+	record.Concerns = DeriveConcerns(record)
+	return s.store.AddInspection(hiveID, record)
 }
 
 func (s *Service) List(hiveID string) ([]domain.Inspection, error) {
