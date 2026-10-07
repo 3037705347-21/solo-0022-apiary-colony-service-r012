@@ -1,8 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
+
+	"example.com/apiary-colony-service/internal/domain"
+	"example.com/apiary-colony-service/internal/status"
 )
 
 const (
@@ -92,19 +97,73 @@ func checkRecordInspection(c *client) error {
 	if err := seedDefault(c); err != nil {
 		return err
 	}
+	// 群势越界必须整体退回，不能夹到区间后保存。
 	if _, err := c.expect("POST", "/hives/hive-01/inspections", map[string]any{
 		"observedAt": "2026-04-10T09:00:00Z", "colonyStrength": 9, "broodPattern": "patchy",
 		"temper": "calm", "miteCount": 3, "note": "",
-	}, 400, `"code":"invalid_request"`); err != nil {
+	}, 400, `"code":"invalid_request"`, `"field":"colonyStrength"`); err != nil {
 		return err
 	}
+	// 螨数越界同样整体退回。
 	if _, err := c.expect("POST", "/hives/hive-01/inspections", map[string]any{
 		"observedAt": "2026-04-10T09:00:00Z", "colonyStrength": 3, "broodPattern": "patchy",
-		"temper": "aggressive", "miteCount": 12, "note": "西侧巢门观察",
-	}, 201, `"inspection-000001"`, `"mite_load"`, `"temper_risk"`); err != nil {
+		"temper": "calm", "miteCount": 61, "note": "",
+	}, 400, `"code":"invalid_request"`, `"field":"miteCount"`); err != nil {
 		return err
 	}
-	if _, err := c.expect("GET", "/hives/hive-01/inspections", nil, 200, `"note":"西侧巢门观察"`); err != nil {
+	// 被拒绝的提交不能留下任何记录（也不能占用编号）。
+	if reply, err := c.expect("GET", "/hives/hive-01/inspections", nil, 200, "[]"); err != nil {
+		return err
+	} else if strings.TrimSpace(reply.text()) != "[]" {
+		return fmt.Errorf("被退回的巡检不应留下记录，实际 %s", reply.text())
+	}
+	// 合法量测：子脾带首尾空白，规范化后必须与回执、列表、概览保持同一份内容。
+	first, err := c.expect("POST", "/hives/hive-01/inspections", map[string]any{
+		"observedAt": "2026-04-10T09:00:00Z", "colonyStrength": 2, "broodPattern": " none ",
+		"temper": "calm", "miteCount": 3, "note": "西侧巢门观察",
+	}, 201, `"id":"inspection-000001"`, `"broodPattern":"none"`,
+		`"concerns":["brood_gap","low_strength"]`)
+	if err != nil {
+		return err
+	}
+	firstRecord, err := decodeInspection(first.text())
+	if err != nil {
+		return err
+	}
+	if err := statusConcernsEqual(c, firstRecord, []string{"brood_gap", "low_strength"}); err != nil {
+		return err
+	}
+	listed, err := c.expect("GET", "/hives/hive-01/inspections", nil, 200,
+		`"id":"inspection-000001"`, `"note":"西侧巢门观察"`, `"broodPattern":"none"`,
+		`"concerns":["brood_gap","low_strength"]`)
+	if err != nil {
+		return err
+	}
+	if err := listContainsExact(listed.text(), firstRecord); err != nil {
+		return err
+	}
+	// 正常范围内但触发螨负荷与性情关注项的量测仍可正常提交。
+	second, err := c.expect("POST", "/hives/hive-01/inspections", map[string]any{
+		"observedAt": "2026-04-12T09:00:00Z", "colonyStrength": 3, "broodPattern": "patchy",
+		"temper": "aggressive", "miteCount": 12, "note": "",
+	}, 201, `"id":"inspection-000002"`, `"miteCount":12`,
+		`"concerns":["mite_load","temper_risk"]`)
+	if err != nil {
+		return err
+	}
+	secondRecord, err := decodeInspection(second.text())
+	if err != nil {
+		return err
+	}
+	listed, err = c.call("GET", "/hives/hive-01/inspections", nil)
+	if err != nil {
+		return err
+	}
+	if err := listContainsExact(listed.text(), secondRecord); err != nil {
+		return err
+	}
+	// 概览必须以最近一次巡检为准，且关注项与该次记录逐字一致。
+	if err := statusConcernsEqual(c, secondRecord, []string{"mite_load", "temper_risk"}); err != nil {
 		return err
 	}
 	if _, err := c.expect("POST", "/hives/hive-01/state", map[string]any{"target": "retired"}, 200,
@@ -112,12 +171,71 @@ func checkRecordInspection(c *client) error {
 		return err
 	}
 	if _, err := c.expect("POST", "/hives/hive-01/inspections", map[string]any{
-		"observedAt": "2026-04-11T09:00:00Z", "colonyStrength": 3, "broodPattern": "solid",
+		"observedAt": "2026-04-13T09:00:00Z", "colonyStrength": 3, "broodPattern": "solid",
 		"temper": "calm", "miteCount": 1, "note": "",
 	}, 409, `"code":"invalid_state"`); err != nil {
 		return err
 	}
 	return nil
+}
+
+func decodeInspection(body string) (domain.Inspection, error) {
+	var record domain.Inspection
+	if err := json.Unmarshal([]byte(body), &record); err != nil {
+		return domain.Inspection{}, fmt.Errorf("解析巡检回执失败：%v（%s）", err, body)
+	}
+	return record, nil
+}
+
+// listContainsExact 断言巡检列表中逐字段存在与回执完全相同的记录。
+func listContainsExact(body string, want domain.Inspection) error {
+	var records []domain.Inspection
+	if err := json.Unmarshal([]byte(body), &records); err != nil {
+		return fmt.Errorf("解析巡检列表失败：%v（%s）", err, body)
+	}
+	for _, record := range records {
+		if reflect.DeepEqual(record, want) {
+			return nil
+		}
+	}
+	return fmt.Errorf("巡检列表缺少与回执完全一致的记录 %+v，实际 %s", want, body)
+}
+
+// statusConcernsEqual 断言蜂场概览里该蜂箱的最近关注项与巡检记录同源一致，
+// 且该蜂箱正是据此进入/离开 concernHives。
+func statusConcernsEqual(c *client, want domain.Inspection, wantConcerns []string) error {
+	reply, err := c.call("GET", "/apiaries/"+demoApiaryID+"/status?asOf=2026-04-12T00:00:00Z", nil)
+	if err != nil {
+		return err
+	}
+	var report status.Report
+	if err := json.Unmarshal(reply.body, &report); err != nil {
+		return fmt.Errorf("解析蜂场概览失败：%v（%s）", err, reply.text())
+	}
+	for _, summary := range report.Hives {
+		if summary.HiveID != want.HiveID {
+			continue
+		}
+		lastAt := summary.LastInspectionAt
+		if lastAt == nil || !lastAt.Equal(want.ObservedAt) {
+			return fmt.Errorf("概览最近巡检时间 %v 与记录 %v 不一致", lastAt, want.ObservedAt)
+		}
+		if !reflect.DeepEqual([]string(summary.LatestConcerns), wantConcerns) ||
+			!reflect.DeepEqual([]string(want.Concerns), wantConcerns) {
+			return fmt.Errorf("概览关注项 %v 与记录关注项 %v 不一致", summary.LatestConcerns, want.Concerns)
+		}
+		foundInConcernHives := false
+		for _, id := range report.ConcernHives {
+			if id == want.HiveID {
+				foundInConcernHives = true
+			}
+		}
+		if len(wantConcerns) > 0 && !foundInConcernHives {
+			return fmt.Errorf("记录存在关注项 %v，但概览未把 %q 列入 concernHives", wantConcerns, want.HiveID)
+		}
+		return nil
+	}
+	return fmt.Errorf("概览中缺少蜂箱 %q：%s", want.HiveID, reply.text())
 }
 
 func checkReplaceQueen(c *client) error {

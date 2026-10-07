@@ -41,6 +41,7 @@ func (s *Service) Record(hiveID string, input RecordInput) (domain.Inspection, e
 		MiteCount:      input.MiteCount,
 		Note:           input.Note,
 	}
+	// 只规范化文本（去首尾空白）；整数量测保持原值，越界由 NewInspection 整体拒绝。
 	normalized := domain.NormalizeInspectionMeasurements(submitted)
 	record, err := domain.NewInspection(
 		hiveID,
@@ -54,30 +55,9 @@ func (s *Service) Record(hiveID string, input RecordInput) (domain.Inspection, e
 	if err != nil {
 		return domain.Inspection{}, err
 	}
-	record.Concerns = submittedConcerns(submitted)
-	saved, err := s.store.AddInspection(hiveID, record)
-	if err != nil {
-		return domain.Inspection{}, err
-	}
-	saved.ColonyStrength = submitted.ColonyStrength
-	saved.MiteCount = submitted.MiteCount
-	return saved, nil
-}
-
-// submittedConcerns 按提交时的量测派生关注项。
-func submittedConcerns(input domain.InspectionMeasurements) []string {
-	return DeriveConcerns(measurementSnapshot(input))
-}
-
-// measurementSnapshot 把提交时的量测还原成一份用于派生关注项的记录。
-func measurementSnapshot(input domain.InspectionMeasurements) domain.Inspection {
-	return domain.Inspection{
-		ColonyStrength: input.ColonyStrength,
-		BroodPattern:   input.BroodPattern,
-		Temper:         input.Temper,
-		MiteCount:      input.MiteCount,
-		Note:           input.Note,
-	}
+	// 关注项只从这份已校验、将被保存的记录派生，保证回执、列表与概览同源一致。
+	record.Concerns = DeriveConcerns(record)
+	return s.store.AddInspection(hiveID, record)
 }
 
 func (s *Service) List(hiveID string) ([]domain.Inspection, error) {

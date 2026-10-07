@@ -48,12 +48,11 @@ type InspectionMeasurements struct {
 	Note           string
 }
 
-// NormalizeInspectionMeasurements 把量测整理成后续流程可以直接使用的取值。
-// 群势与螨数会落到系统认可的区间，文本字段去掉首尾空白。
+// NormalizeInspectionMeasurements 整理提交量测的文本表示：枚举与备注去掉首尾空白。
+// 整数量测保持提交原值，越界值由 NewInspection 的范围校验整体拒绝，
+// 不能在此改写成看似合法的值再保存。
 func NormalizeInspectionMeasurements(input InspectionMeasurements) InspectionMeasurements {
 	normalized := input
-	normalized.ColonyStrength = clampMeasure(input.ColonyStrength, MinColonyStrength, MaxColonyStrength)
-	normalized.MiteCount = clampMeasure(input.MiteCount, MinMiteCount, MaxMiteCount)
 	normalized.BroodPattern = CanonicalBroodPattern(input.BroodPattern)
 	normalized.Temper = CanonicalTemper(input.Temper)
 	normalized.Note = TrimText(input.Note)
@@ -68,16 +67,6 @@ func CanonicalBroodPattern(value BroodPattern) BroodPattern {
 // CanonicalTemper 去掉性情文本的首尾空白。
 func CanonicalTemper(value Temper) Temper {
 	return Temper(TrimText(string(value)))
-}
-
-func clampMeasure(value, minimum, maximum int) int {
-	if value < minimum {
-		return minimum
-	}
-	if value > maximum {
-		return maximum
-	}
-	return value
 }
 
 func NewInspection(

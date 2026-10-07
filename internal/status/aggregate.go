@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"example.com/apiary-colony-service/internal/domain"
-	"example.com/apiary-colony-service/internal/inspection"
 	"example.com/apiary-colony-service/internal/store"
 )
 
@@ -62,9 +61,10 @@ func BuildReport(snapshot store.Snapshot, apiary domain.Apiary, asOf time.Time) 
 		if latest, ok := snapshot.LatestInspection(hive.ID); ok {
 			observedAt := latest.ObservedAt
 			summary.LastInspectionAt = &observedAt
-			concerns := latestConcerns(latest)
-			if len(concerns) > 0 {
-				summary.LatestConcerns = append([]string{}, concerns...)
+			// 关注项随巡检记录固化，概览必须与提交回执、巡检列表读同一份内容，
+			// 不再基于量测另行派生，避免三处结果不一致。
+			if len(latest.Concerns) > 0 {
+				summary.LatestConcerns = append([]string{}, latest.Concerns...)
 				report.ConcernHives = append(report.ConcernHives, hive.ID)
 			}
 		}
@@ -76,11 +76,6 @@ func BuildReport(snapshot store.Snapshot, apiary domain.Apiary, asOf time.Time) 
 	sort.Strings(report.NeedsInspection)
 	sort.Strings(report.ConcernHives)
 	return report
-}
-
-// latestConcerns 按已保存的量测重新派生最近一次关注项。
-func latestConcerns(latest domain.Inspection) []string {
-	return inspection.DeriveConcerns(latest)
 }
 
 // NeedsInspection 判定蜂箱是否需要巡检：从未巡检，或距 asOf 超过巡检窗口。
